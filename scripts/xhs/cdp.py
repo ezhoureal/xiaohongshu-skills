@@ -69,6 +69,11 @@ class Page:
         self._ws = cdp._ws
         self._id_counter = 1000
 
+    def is_chrome_on_windows(self) -> bool:
+        """返回 Chrome 是否运行在 Windows 上（通过 navigator.userAgent 检测）。"""
+        ua = self.evaluate("navigator.userAgent") or ""
+        return "Windows" in ua
+
     def _send_session(self, method: str, params: dict | None = None) -> dict:
         """向 session 发送命令。"""
         self._id_counter += 1
@@ -535,7 +540,9 @@ class Page:
         try:
             doc = self._send_session("DOM.getDocument", {"depth": 0})
             root_id = doc["root"]["nodeId"]
-            query = self._send_session("DOM.querySelector", {"nodeId": root_id, "selector": selector})
+            query = self._send_session(
+                "DOM.querySelector", {"nodeId": root_id, "selector": selector}
+            )
             node_id = query.get("nodeId", 0)
             if not node_id:
                 return b""

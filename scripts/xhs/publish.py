@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import random
 import re
+import subprocess
 import time
 
 from .cdp import Page
@@ -245,21 +247,75 @@ def _remove_pop_cover(page: Page) -> None:
 # ========== 图片上传 ==========
 
 
+def _convert_to_windows_path(path: str, page: Page) -> str:
+    r"""将路径转换为 Windows 路径格式（用于 Chrome on Windows）。
+
+    仅在以下两个条件同时满足时转换路径：
+    1. 脚本运行在 WSL 环境下
+    2. Chrome 运行在 Windows 上（通过 User-Agent 检测）
+
+    Args:
+        path: 原始路径（可能是 WSL 或 Windows 路径）。
+        page: CDP 页面对象，用于检测 Chrome 平台。
+
+    Returns:
+        Chrome 可以访问的路径（需要转换时为 Windows 路径，否则保持原样）。
+    """
+    # 检查 Chrome 是否运行在 Windows 上
+    if not page.is_chrome_on_windows():
+        return path
+
+    # 非 Linux 平台直接返回原路径
+    if platform.system() != "Linux":
+        return path
+
+    # 检查是否为 WSL 环境
+    try:
+        with open("/proc/version", "r") as f:
+            proc_version = f.read().lower()
+            is_wsl = "microsoft" in proc_version
+    except Exception:
+        is_wsl = False
+
+    if not is_wsl:
+        return path
+
+    # WSL + Windows Chrome：使用 wslpath 转换为 Windows 路径
+    try:
+        result = subprocess.run(
+            ["wslpath", "-w", path],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        windows_path = result.stdout.strip()
+        logger.debug("路径转换 (WSL->Windows): %s -> %s", path, windows_path)
+        return windows_path
+    except subprocess.CalledProcessError:
+        logger.warning("wslpath 转换失败，使用原路径: %s", path)
+        return path
+    except FileNotFoundError:
+        logger.warning("未找到 wslpath 命令，使用原路径: %s", path)
+        return path
+
+
 def _upload_images(page: Page, image_paths: list[str]) -> None:
-    """逐张上传图片。"""
+    """批量上传图片（利用 input[multiple] 特性一次性上传所有文件）。
+
+    在 WSL + Windows Chrome 环境下自动将 Linux 路径转换为 Windows 路径。
+    """
     import os
 
     valid_paths = [p for p in image_paths if os.path.exists(p)]
     if not valid_paths:
         raise PublishError("没有有效的图片文件")
 
-    for i, path in enumerate(valid_paths):
-        selector = UPLOAD_INPUT if i == 0 else FILE_INPUT
-        logger.info("上传第 %d 张图片: %s", i + 1, path)
+    # 根据环境自动转换路径（WSL + Windows Chrome 时转换为 Windows 路径）
+    converted_paths = [_convert_to_windows_path(p, page) for p in valid_paths]
 
-        page.set_file_input(selector, [path])
-        _wait_for_upload_complete(page, i + 1)
-        time.sleep(1)
+    logger.info("批量上传 %d 张图片", len(converted_paths))
+    page.set_file_input(UPLOAD_INPUT, converted_paths)
+    _wait_for_upload_complete(page, len(converted_paths))
 
 
 def _wait_for_upload_complete(page: Page, expected_count: int) -> None:
